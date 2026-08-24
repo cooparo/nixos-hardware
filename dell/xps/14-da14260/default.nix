@@ -56,7 +56,21 @@ in
   # Don't let v4l2loopback auto-create a device at load time — an unconfigured
   # device has a degenerate framerate range that breaks GStreamer caps
   # negotiation. The relay service below creates a configured device at runtime.
-  boot.extraModprobeConfig = "options v4l2loopback devices=0";
+  #
+  # The softdep orders the USB-I2C bridge stack ahead of the imaging unit. The
+  # sensors are not on a native I2C controller: they sit behind the SVP7500,
+  # which tunnels I2C over a USB bulk interface, so usbio -> i2c_usbio ->
+  # intel_cvs -> INT3472 all have to exist before intel_ipu7 goes looking for
+  # sensors. Without it intel_ipu7 can probe first, find the sensors the
+  # firmware declares, and start bring-up while the bridge driver is still
+  # registering underneath it; the bridge then re-enumerates and fails
+  # indefinitely ("usbio-bridge 3-3:1.0: Bulk out failed: -110", "usb 3-3: USB
+  # disconnect"), taking the i2c adapters, both sensors and the media graph
+  # down on every cycle. This affects the RGB path too, not just IR.
+  boot.extraModprobeConfig = ''
+    options v4l2loopback devices=0
+    softdep intel_ipu7 pre: usbio gpio_usbio i2c_usbio intel_cvs intel_skl_int3472_discrete
+  '';
 
   # IPU firmware + AIQ blobs for the hardware ISP. ivsc-firmware is kept for
   # parity with the tested `hardware.ipu7` config from nixpkgs #542085, though
@@ -75,6 +89,34 @@ in
     SUBSYSTEM=="usb", ATTRS{idVendor}=="06cb", ATTRS{idProduct}=="0701", ATTR{power/autosuspend}="-1"
     SUBSYSTEM=="intel-ipu7-psys", MODE="0660", GROUP="video"
   '';
+
+  # Hide the raw IPU7 ISYS capture nodes from PipeWire. ISys exposes one
+  # /dev/videoN per CSI-2 stream (~30 of them here), all raw Bayer that no
+  # application can render — the frames only become an image after the PSys
+  # hardware ISP, which is what the relay above exposes. Left visible they fill
+  # every camera picker with unusable entries next to the one real device.
+  #
+  # Matched via device.product.name, which comes from udev's ID_V4L_PRODUCT and
+  # is set by the kernel at device registration -- unlike device.description,
+  # which WirePlumber derives from VIDIOC_QUERYCAP and so requires opening all
+  # ~30 nodes just to decide to hide them. Same approach as nixpkgs'
+  # hardware/video/webcam/ipu6.nix.
+  #
+  # Nothing here depends on IR; RGB-only users get the same benefit. mkDefault
+  # because this is a presentation choice rather than hardware enablement --
+  # set it to { } to get the raw nodes back.
+  services.pipewire.wireplumber.extraConfig."50-disable-v4l2-ipu7" = lib.mkDefault {
+    "monitor.v4l2.rules" = [
+      {
+        actions.update-props."device.disabled" = true;
+        matches = [
+          {
+            "device.product.name" = "ipu7";
+          }
+        ];
+      }
+    ];
+  };
 
   # The IPU7 camera is driven through the Intel camera HAL (hardware ISP with
   # per-sensor AIQ tuning — proper colours, low CPU), but applications only
