@@ -20,6 +20,8 @@ in
     ../../../common/cpu/intel/panther-lake
     ../../../common/pc/laptop
     ../../../common/pc/ssd
+    # Opt-in HM1092 IR camera; see hardware.dell-xps-14-da14260.irCamera.
+    ./ir-camera.nix
   ];
 
   # We need at least 7.0 to have a working mic
@@ -40,15 +42,24 @@ in
   # out-of-tree module registers no subdev and would shadow the in-tree one
   # (same module name, depmod updates/ priority), leaving the ISYS async
   # notifier waiting forever — so only vendor it for older kernels.
+  #
+  # The irCamera option (ir-camera.nix) ships its own intel_cvs build -- the
+  # fix-pack fork exporting cvs_send_mipi_ir_config, which the IR sensor
+  # driver needs -- and two packages providing the same intel_cvs.ko must
+  # never both reach the aggregated module tree. Module-option lists merge by
+  # concatenation, so ir-camera.nix cannot remove this entry; the exclusion
+  # has to live here. boot.kernelModules below is unaffected: the module name
+  # is the same either way.
   boot.extraModulePackages = [
     # PSys module for the hardware ISP; the in-tree staging driver only has
     # the core + ISys (raw capture), which forces the untuned software ISP.
     (config.boot.kernelPackages.callPackage ./ipu7-drivers { })
     config.boot.kernelPackages.v4l2loopback
   ]
-  ++ lib.optional (lib.versionOlder config.boot.kernelPackages.kernel.version "7.2") (
-    config.boot.kernelPackages.callPackage ./intel-cvs { }
-  );
+  ++ lib.optional (
+    lib.versionOlder config.boot.kernelPackages.kernel.version "7.2"
+    && !config.hardware.dell-xps-14-da14260.irCamera.enable
+  ) (config.boot.kernelPackages.callPackage ./intel-cvs { });
   boot.kernelModules = [
     "intel_cvs"
     "v4l2loopback"
