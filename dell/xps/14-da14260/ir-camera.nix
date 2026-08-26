@@ -39,6 +39,11 @@ in
           forwarding configured; the plain intel/vision-drivers build exports
           no symbols and leaves every IR frame dark.
 
+          The sensor shows up as `/dev/ir-camera`, a stable symlink to whichever
+          ISYS capture node it lands on for this boot. Point a face-auth
+          configuration at that rather than at a `/dev/videoN` number, which is
+          not stable across reboots.
+
           An assertion restricts this to 7.1.x. Below 7.1 int3472 does not
           register the illuminator as a LED device, so there is nothing for the
           udev rule to grant and every frame comes back dark. From 7.2 the
@@ -150,8 +155,27 @@ in
     # unlit, versus 0.4% lit). The upstream fix-pack rule calls /bin/chgrp and
     # /bin/chmod, which do not exist on NixOS and make the rule a silent no-op,
     # hence the absolute store paths.
+    #
+    # The second rule hands out a stable path for the IR capture node itself.
+    # ISYS registers one capture node per CSI-2 stream (~32 on this machine) and
+    # /dev/videoN numbering follows registration order, so the IR node's number
+    # is not stable across boots and there is nothing safe to write into a
+    # face-auth config. Worse, the numeric default such configs usually ship,
+    # /dev/video2, is a real but unrelated ISYS node here -- so getting it wrong
+    # opens the wrong camera rather than failing to open one.
+    #
+    # The V4L2 card name is stable, and it names the capture entity rather than
+    # the node: the sensor's link into "Intel IPU7 CSI2 2" is IMMUTABLE, that
+    # port's first pad is the only ENABLED link out of it, and ISYS allocates
+    # capture entities eight per CSI-2 port -- so port 2 is entity 16 by
+    # construction, whatever /dev/videoN it happens to get. udev exposes that
+    # name as ATTR{name}.
+    #
+    # Do not switch this to the sensor's i2c name ("hm1092 16-0024"): the 16
+    # there is the usbio-tunnelled bus number, which genuinely does vary.
     services.udev.extraRules = ''
       SUBSYSTEM=="leds", KERNEL=="*ir_flood_led*", ACTION=="add|change", RUN+="${pkgs.coreutils}/bin/chgrp video /sys%p/brightness", RUN+="${pkgs.coreutils}/bin/chmod 0664 /sys%p/brightness"
+      SUBSYSTEM=="video4linux", ATTR{name}=="Intel IPU7 ISYS Capture 16", SYMLINK+="ir-camera"
     '';
   };
 }
