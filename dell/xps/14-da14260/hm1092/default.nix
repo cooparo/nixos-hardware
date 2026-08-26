@@ -37,13 +37,32 @@
 stdenv.mkDerivation (finalAttrs: {
   pname = "hm1092";
   # dkms.conf declares PACKAGE_VERSION="1.0"; the rev is an untagged master.
-  version = "1.0-unstable-2026-07-30";
+  version = "1.0-unstable-2026-08-27";
 
+  # Pinned to a fork, like ./intel-cvs-ir, for one commit on top of upstream:
+  # the driver looked the IR illuminator up as a GPIO named "ir-led", but for
+  # INT3472_GPIO_TYPE_STROBE int3472 sets con_id "ir_flood" and consumes the
+  # descriptor into skl_int3472_register_led() rather than publishing it in the
+  # GPIO lookup table -- so the lookup could never match and every boot logged
+  # "ir_led=none". The fork also calls devm_led_get(dev, "ir_flood") and drives
+  # whichever handle resolved.
+  #
+  # This is what makes the sensor usable by an unmodified consumer. Left to
+  # userspace, every client had to drive the emitter itself, and the ones that
+  # do not -- Howdy's stock opencv recorder, ffmpeg, v4l2-ctl -- got frames lit
+  # only by ambient IR, which reads as broken hardware. It also removes a latch
+  # hazard: a killed capture used to be able to leave the emitter lit, whereas
+  # the kernel douses it on stream stop and on remove.
+  #
+  # Verified on the target hardware (DA14260, 7.1.8) before pinning:
+  # ir_led=found, and the illuminator reads 0/1/0 before/during/after
+  # `v4l2-ctl --stream-mmap` at 29.1 fps with no userspace LED writes.
+  # Offered upstream as well; re-point this at jibsta210 if it is merged there.
   src = fetchFromGitHub {
-    owner = "jibsta210";
+    owner = "HritwikSinghal";
     repo = "svp7500-camera-fix-pack";
-    rev = "5d40327c217f4279b235073f1cd9f8e40a9b4a20";
-    hash = "sha256-6Gf2FVy7VItyKlwquKM0wTFycl9KBmhF55UnuWTctEg=";
+    rev = "6b800e4a727fe67651629398ec13ecee1a30efd7";
+    hash = "sha256-+vWsihrgfU0AXi2PFRmM6AYjVyDCTQcTfa0Gv+TkSso=";
   };
 
   # The repo ships several DKMS trees; this one is self-contained (three files,
@@ -80,7 +99,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = {
     description = "Himax HM1092 infrared camera sensor driver";
-    homepage = "https://github.com/jibsta210/svp7500-camera-fix-pack";
+    homepage = "https://github.com/HritwikSinghal/svp7500-camera-fix-pack";
     license = lib.licenses.gpl2Only;
     # The driver carries no LINUX_VERSION_CODE fallbacks at all, so an older
     # kernel fails to compile rather than degrading. The floor comes from

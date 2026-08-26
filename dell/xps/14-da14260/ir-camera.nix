@@ -149,12 +149,18 @@ in
     # The IR flood illuminator is exposed by INT3472 as a LED class device, so
     # it has no /dev node and udev's GROUP=/MODE= cannot reach it -- only the
     # `brightness` sysfs attribute matters, and it is root-only by default.
-    # Face authentication runs as the unprivileged user under a lock screen, so
-    # without this grant the illuminator never fires and every frame comes back
-    # too dark to find a face in (measured on a DA14260: 100% near-black pixels
-    # unlit, versus 0.4% lit). The upstream fix-pack rule calls /bin/chgrp and
-    # /bin/chmod, which do not exist on NixOS and make the rule a silent no-op,
-    # hence the absolute store paths.
+    # (The upstream fix-pack rule calls /bin/chgrp and /bin/chmod, which do not
+    # exist on NixOS and make the rule a silent no-op, hence the store paths.)
+    #
+    # This grant is no longer load-bearing: ./hm1092 now resolves the same LED
+    # through int3472's lookup and drives it around streaming itself, in kernel
+    # context, so an unmodified consumer gets lit frames without touching sysfs.
+    # It is kept because the emitter is otherwise invisible to a user debugging
+    # a dark-frames report -- being able to run
+    #   echo 1 > /sys/class/leds/HIMX1092_00::ir_flood_led/brightness
+    # and see whether the scene lights up separates a sensor problem from an
+    # illuminator problem in one step. Measured on a DA14260: 100% near-black
+    # pixels unlit versus 0.4% lit.
     #
     # The second rule hands out a stable path for the IR capture node itself.
     # ISYS registers one capture node per CSI-2 stream (~32 on this machine) and
