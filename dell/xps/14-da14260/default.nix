@@ -49,10 +49,14 @@ in
   ++ lib.optional (lib.versionOlder config.boot.kernelPackages.kernel.version "7.2") (
     config.boot.kernelPackages.callPackage ./intel-cvs { }
   );
-  boot.kernelModules = [
-    "intel_cvs"
-    "v4l2loopback"
-  ];
+  # v4l2loopback is deliberately not listed here. Only the relay service below
+  # needs it, and that unit pulls it in through modprobe@v4l2loopback, so a
+  # global entry buys nothing. It also breaks a supported configuration:
+  # nixos/modules/services/security/howdy asserts that "v4l2loopback" is absent
+  # from boot.kernelModules, so listing it makes this profile and
+  # services.howdy.enable mutually unevaluatable -- which matters here, because
+  # the IR camera this profile can enable exists to drive Howdy.
+  boot.kernelModules = [ "intel_cvs" ];
   # Don't let v4l2loopback auto-create a device at load time — an unconfigured
   # device has a degenerate framerate range that breaks GStreamer caps
   # negotiation. The relay service below creates a configured device at runtime.
@@ -176,6 +180,11 @@ in
     in
     {
       description = "Intel IPU7 camera to v4l2loopback relay (hardware ISP via camera HAL)";
+      # `wants` as well as `after`: ordering alone never pulls a unit in, so
+      # without this the module would only be loaded if something else happened
+      # to request it. preStart calls v4l2loopback-ctl, which needs the module
+      # already present.
+      wants = [ "modprobe@v4l2loopback.service" ];
       after = [ "modprobe@v4l2loopback.service" ];
       wantedBy = [ "multi-user.target" ];
       environment = {
