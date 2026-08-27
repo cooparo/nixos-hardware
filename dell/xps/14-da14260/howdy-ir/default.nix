@@ -25,8 +25,8 @@ let
   fixPack = fetchFromGitHub {
     owner = "HritwikSinghal";
     repo = "svp7500-camera-fix-pack";
-    rev = "a0f561b24fd4a42c733cbc1d93b24627ad483e76";
-    hash = "sha256-SevQC+u31vJeRi13nd1iy7Xt7NE9jzQQz1MiHYiL9y8=";
+    tag = "nixos-pin-2026-08-27";
+    hash = "sha256-+vWsihrgfU0AXi2PFRmM6AYjVyDCTQcTfa0Gv+TkSso=";
   };
 in
 howdy.overrideAttrs (old: {

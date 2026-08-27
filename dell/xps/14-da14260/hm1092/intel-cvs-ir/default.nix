@@ -25,7 +25,7 @@
 # also does.
 #
 # Pinned to the fork rather than jibsta210 upstream because this exact rev is
-# what was runtime-verified: tag nixos-pin-2026-08-25, whose default build
+# what was runtime-verified: tag nixos-pin-2026-08-27, whose default build
 # compiles the fork's bring-up diagnostics out (DEBUG_CVS, off unless built
 # with `make DEBUG_CVS=1`) and was DKMS boot-tested on a DA14260 on
 # 7.1.8-arch1-2-ptl -- face authentication succeeded through it, with the
@@ -35,14 +35,14 @@
 stdenv.mkDerivation (finalAttrs: {
   pname = "intel-cvs-ir";
   # dkms.conf declares PACKAGE_VERSION="1.0"; the rev is tag
-  # nixos-pin-2026-08-25 on the fork.
-  version = "1.0-unstable-2026-08-25";
+  # nixos-pin-2026-08-27 on the fork.
+  version = "1.0-unstable-2026-08-27";
 
   src = fetchFromGitHub {
     owner = "HritwikSinghal";
     repo = "svp7500-camera-fix-pack";
-    rev = "a0f561b24fd4a42c733cbc1d93b24627ad483e76";
-    hash = "sha256-SevQC+u31vJeRi13nd1iy7Xt7NE9jzQQz1MiHYiL9y8=";
+    tag = "nixos-pin-2026-08-27";
+    hash = "sha256-+vWsihrgfU0AXi2PFRmM6AYjVyDCTQcTfa0Gv+TkSso=";
   };
 
   sourceRoot = "${finalAttrs.src.name}/dkms/intel-cvs-1.0";

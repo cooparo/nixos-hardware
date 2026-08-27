@@ -36,7 +36,8 @@
 # single tree, so that holds by construction.
 stdenv.mkDerivation (finalAttrs: {
   pname = "hm1092";
-  # dkms.conf declares PACKAGE_VERSION="1.0"; the rev is an untagged master.
+  # dkms.conf declares PACKAGE_VERSION="1.0"; the rev is tag
+  # nixos-pin-2026-08-27 on the fork.
   version = "1.0-unstable-2026-08-27";
 
   # Pinned to a fork, like ./intel-cvs-ir, for one commit on top of upstream:
@@ -61,7 +62,7 @@ stdenv.mkDerivation (finalAttrs: {
   src = fetchFromGitHub {
     owner = "HritwikSinghal";
     repo = "svp7500-camera-fix-pack";
-    rev = "6b800e4a727fe67651629398ec13ecee1a30efd7";
+    tag = "nixos-pin-2026-08-27";
     hash = "sha256-+vWsihrgfU0AXi2PFRmM6AYjVyDCTQcTfa0Gv+TkSso=";
   };
 
