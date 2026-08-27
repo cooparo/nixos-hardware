@@ -1,5 +1,6 @@
 {
   config,
+  options,
   lib,
   pkgs,
   ...
@@ -7,8 +8,10 @@
 
 let
   inherit (lib)
+    mkDefault
     mkIf
     mkOption
+    optionalAttrs
     types
     versionAtLeast
     versionOlder
@@ -17,8 +20,135 @@ let
   cfg = config.hardware.dell-xps-14-da14260.irCamera;
 
   kernelVersion = config.boot.kernelPackages.kernel.version;
+
+  # services.howdy landed in nixpkgs only in early 2026; nixos-hardware still
+  # evaluates against older channels that lack it, so every reference to the
+  # option -- and to ./howdy-ir, which needs pkgs.howdy -- is gated on this.
+  hasHowdyModule = options.services ? howdy;
 in
 {
+  # Kept out of the `config` block below so that block stays a verbatim part of
+  # the base opt-in; these are the pipeline unit and the optional Howdy wiring.
+  imports = [
+    (mkIf cfg.enable {
+      assertions = [
+        {
+          assertion = !cfg.howdy.enable || hasHowdyModule;
+          message = ''
+            hardware.dell-xps-14-da14260.irCamera.howdy is enabled, but this
+            nixpkgs has no services.howdy module (added early 2026). Upgrade
+            nixpkgs, or set Howdy up by hand against /dev/ir-camera -- ./howdy-ir
+            is the recorder it needs.
+          '';
+        }
+      ];
+
+      # Bring the IR capture pipeline up at boot.
+      #
+      # The IPU7 media graph starts with the CSI2 -> ISYS Capture link DISABLED
+      # and every pad at its 4096x3072 default, while the sensor emits
+      # SGRBG10_1X10/648x368 -- so a bare VIDIOC_STREAMON on /dev/ir-camera
+      # fails link validation (-ENOLINK on a fresh graph, -EPIPE once the link
+      # is up but the pads still disagree). libcamera would propagate the format
+      # itself, but it also debayers this physically-mono sensor, so the IR path
+      # bypasses it.
+      #
+      # ./howdy-ir's recorder does the same setup from userspace, so this unit
+      # is not required when Howdy is the only consumer -- it is here so a plain
+      # `v4l2-ctl --stream-mmap -d /dev/ir-camera` or `ffmpeg -f v4l2 ...` works
+      # after boot without manual media-ctl, which is also the first thing to
+      # try when frames come back dark. Port 2 matches the udev rule above
+      # (entity 16 = port 2 by construction on this board); the media device is
+      # found by driver name rather than assuming /dev/media0.
+      systemd.services.ir-camera-pipeline = {
+        description = "Bring up the HM1092 IR camera CSI-2 pipeline";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "systemd-udev-settle.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        path = [
+          pkgs.v4l-utils
+          pkgs.coreutils
+        ];
+        script = ''
+          set -eu
+
+          # /dev/ir-camera comes from the udev rule below; the media node it
+          # rides on can appear a moment after udev settle.
+          node=
+          for _ in $(seq 1 50); do
+            if [ -e /dev/ir-camera ]; then
+              node=/dev/ir-camera
+              break
+            fi
+            sleep 0.2
+          done
+          if [ -z "$node" ]; then
+            echo "/dev/ir-camera never appeared; nothing to do"
+            exit 0
+          fi
+
+          md=
+          for m in /dev/media*; do
+            [ -e "$m" ] || continue
+            if media-ctl -d "$m" -p 2>/dev/null | grep -qE 'driver[[:space:]]+intel-ipu7'; then
+              md=$m
+              break
+            fi
+          done
+          if [ -z "$md" ]; then
+            echo "no intel-ipu7 media device found; nothing to do"
+            exit 0
+          fi
+
+          if ! media-ctl -d "$md" -p 2>/dev/null | grep -q '"Intel IPU7 CSI2 2"'; then
+            echo "CSI-2 port 2 entity absent; nothing to do"
+            exit 0
+          fi
+
+          media-ctl -d "$md" -V '"Intel IPU7 CSI2 2":0 [fmt:SGRBG10_1X10/648x368]'
+          media-ctl -d "$md" -V '"Intel IPU7 CSI2 2":1 [fmt:SGRBG10_1X10/648x368]'
+
+          # Pre-set the capture node so `v4l2-ctl --stream` / `ffmpeg -f v4l2`
+          # work with no explicit format. Howdy's recorder sets its own.
+          v4l2-ctl -d "$node" --set-fmt-video=width=648,height=368,pixelformat=BA10 || true
+        '';
+      };
+    })
+
+    # Howdy against the HM1092. Everything here is overridable; see the
+    # howdy.enable option description and ./howdy-ir. optionalAttrs (not just the
+    # assertion) so that on a nixpkgs without services.howdy this contributes no
+    # definition at all -- the module system surfaces attr paths through a
+    # disabled mkIf, and an unmatched services.howdy would abort evaluation.
+    (mkIf (cfg.enable && cfg.howdy.enable) (
+      optionalAttrs hasHowdyModule {
+        services.howdy = {
+          enable = true;
+          package = pkgs.callPackage ./howdy-ir { };
+
+          # 'required' would make a face match a hard second factor on every
+          # sudo/login and lock you out whenever IR is flaky; keep the password
+          # path. mkDefault so a user who wants 2FA can still opt in.
+          control = mkDefault "sufficient";
+
+          settings.video = {
+            # The custom recorder from ./howdy-ir. Reads the node as raw
+            # greyscale rather than letting opencv/ffmpeg mishandle the
+            # Bayer-tagged mono frames.
+            recording_plugin = "ir";
+            device_path = "/dev/ir-camera";
+            # Reject a frame only when >90% of it is near-black after CLAHE --
+            # lenient, because the scene is lit solely by the flood illuminator.
+            dark_threshold = 90;
+            timeout = 6;
+          };
+        };
+      }
+    ))
+  ];
   options = {
     hardware.dell-xps-14-da14260.irCamera = {
       enable = mkOption {
@@ -50,6 +180,28 @@ in
           in-tree cvs driver routes the sensor graph through its own V4L2 subdev
           instead of the out-of-tree intel_cvs this was tested against, which is
           untested rather than known-broken -- see the assertion message.
+        '';
+      };
+
+      howdy.enable = mkOption {
+        default = false;
+        type = types.bool;
+        description = ''
+          Wire up Howdy (`services.howdy`) to authenticate against this camera.
+          Requires `hardware.dell-xps-14-da14260.irCamera.enable`.
+
+          Stock Howdy cannot use the HM1092: its opencv recorder cannot decode
+          the raw 10-bit Bayer-tagged frames, its ffmpeg recorder would debayer
+          a physically-monochrome sensor, and none of them drive the flood
+          illuminator. This installs a `howdy` built with a fourth recorder,
+          `recording_plugin = "ir"`, that reads `/dev/ir-camera` directly as
+          greyscale, sets up the CSI-2 pipeline, and toggles the illuminator
+          around each scan.
+
+          Sets `services.howdy.package` and `.settings.video`, and as a
+          `mkDefault` sets `.control = "sufficient"` so a flaky IR scan cannot
+          lock you out of the password path. Everything under `services.howdy`
+          stays overridable; enrol with `howdy add` after a rebuild.
         '';
       };
     };

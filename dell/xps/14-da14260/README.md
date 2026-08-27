@@ -330,14 +330,16 @@ programmed the D-PHY at twice the sensor's real rate, so the clock lane came up
 and no packet ever framed: zero SOF, indistinguishable from a dead transmitter.
 Retracted by its author on 2026-07-25, intel/vision-drivers#37.
 
-Enable with `hardware.dell-xps-14-da14260.irCamera.enable = true;`. Four pieces:
+Enable with `hardware.dell-xps-14-da14260.irCamera.enable = true;`. Pieces:
 
 | Piece | Why |
 |---|---|
 | `hm1092/` module | Sensor driver with the corrected `LINK_FREQ`. No in-tree counterpart — `drivers/media/i2c/hm1092.c` does not exist in mainline, so this stays vendored |
 | `hm1092/intel-cvs-ir/` module | The fix pack's fork of `intel_cvs`, **replacing** the profile's plain `intel-cvs` (same `intel_cvs.ko`; the base profile drops its entry when this option is on). It exports `cvs_send_mipi_ir_config`, which hm1092 calls through a weak reference at stream start to get CSI-2 port-2 forwarding configured — the plain `intel/vision-drivers` build exports no symbols, so the weak reference resolves NULL and every IR frame stays dark. Pinned at a rev whose exact build was boot-tested on a DA14260; its bring-up diagnostics compile out by default (`make DEBUG_CVS=1` restores them) |
 | `himx1092-ipu-bridge.patch` | Adds the sensor's ACPI HID to `ipu_supported_sensors[]`. The i2c client enumerates without it, but with no software node the ISYS async notifier has nothing to match, so the sensor never joins the media graph. Backported verbatim from mainline `4fdb0342f05e` |
-| IR-LED udev rule | Grants group `video` write on the illuminator's `brightness` |
+| IR-LED udev rule + `/dev/ir-camera` symlink | Grants group `video` write on the illuminator's `brightness`, and pins a stable path to the capture node (the `/dev/videoN` number is not stable across boots) |
+| `ir-camera-pipeline.service` | A boot-time oneshot that sets the CSI-2 port-2 pad formats to `SGRBG10_1X10/648x368` and pre-sets the capture node, so a bare `v4l2-ctl --stream` / `ffmpeg -f v4l2` on `/dev/ir-camera` works without manual `media-ctl`. Howdy's recorder does this itself; the unit is for other consumers and for diagnosis |
+| `howdy-ir/` + `irCamera.howdy.enable` | Opt-in on top of `irCamera.enable`: builds `services.howdy` with a raw-V4L2 `recording_plugin = "ir"` recorder (from the fix pack) that reads the node as greyscale and drives the illuminator. Stock Howdy's recorders either can't decode the raw Bayer-tagged mono frames or would debayer them, and none light the emitter. Gated on the `services.howdy` module existing (added to nixpkgs in early 2026) |
 
 **Off by default** because the ipu-bridge entry landed in mainline only after 7.2,
 so below that it has to be patched in — which means building the kernel locally
@@ -361,10 +363,10 @@ its `ir-led` lookup and logs `ir_led=none`, so the consumer has to drive
 frames, which looks exactly like broken hardware. And a bare `v4l2-ctl
 --stream-mmap` on the IR node fails on a fresh boot (`ENOLINK`, or `EPIPE` once
 the link is up but pad formats still disagree): the graph starts with the CSI2 ->
-ISYS Capture link disabled and the pads at their 4096x3072 default. Configure the
-pads and enable the link with `media-ctl` first, which is what Howdy's recorder
-does — and why it bypasses libcamera, which would debayer this physically-mono
-sensor.
+ISYS Capture link disabled and the pads at their 4096x3072 default, so the pads
+have to be set and the link enabled with `media-ctl` first. `ir-camera-pipeline.service`
+does that at boot; Howdy's `ir` recorder also does it itself (and bypasses
+libcamera, which would debayer this physically-mono sensor).
 
 ## Microphone — needs kernel ≥ 7.0
 
@@ -414,7 +416,9 @@ IR camera **opt-in** on kernel < 7.2, via
 `hardware.dell-xps-14-da14260.irCamera.enable = true;` — that pulls in an
 ipu-bridge patch and so rebuilds the kernel, which is why it is not on by default.
 Enabling it on 7.2 or later is refused by an assertion; see above for what is and
-is not known there.
+is not known there. `irCamera.howdy.enable = true;` on top of that configures
+`services.howdy` end-to-end against `/dev/ir-camera` (needs a nixpkgs new enough
+to have the `services.howdy` module).
 
 Scope of the evidence: the sensor, the bridge entry and the illuminator are
 confirmed working on this DA14260 (kernel 7.1.8) and, by the fix pack's author, on
@@ -423,10 +427,12 @@ profile. The `intel-cvs-ir` pin is the exact code that was boot-tested: the same
 rev, built with its diagnostics compiled out just as this derivation builds it,
 authenticated a face through the full stream-start path (bridge reported
 `GET_DEVICE_STATE = 0x06` after the IR `HOST_SET_MIPI_CONFIG`). The Nix side is
-build- and eval-verified only: the modules compile against 6.12/6.18/7.1 and the
-profile evaluates, but nobody has yet booted NixOS with `irCamera.enable = true`
-and confirmed IR streams. Face-authentication setup itself (Howdy, PAM) is
-user-side and out of scope; the fix pack's `howdy/` directory is the reference.
+build- and eval-verified plus a partial on-hardware check: on a DA14260 running
+this profile's kernel 7.1.9 build, `/dev/ir-camera` streams 648×368 at ~29 fps
+with the illuminator toggling around capture, and the `howdy-ir` recorder returns
+lit, correctly-framed greyscale frames. A full `pam_howdy` face-auth pass on the
+NixOS profile (as opposed to the fix pack's earlier DKMS-on-Arch test) has not
+been re-confirmed since the recorder landed here.
 
 ## Next Steps
 
