@@ -22,6 +22,8 @@ in
     ../../../common/pc/ssd
     # Opt-in HM1092 IR camera; see hardware.dell-xps-14-da14260.irCamera.
     ./ir-camera.nix
+    # Opt-in speaker voicing; see hardware.dell-xps-14-da14260.speakerTuning.
+    ./speaker-tuning.nix
   ];
 
   # We need at least 7.0 to have a working mic

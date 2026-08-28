@@ -1,4 +1,4 @@
-# Dell XPS 14 DA14260 — Webcam Debug Log
+# Dell XPS 14 DA14260 — Hardware Notes
 
 ## Hardware
 
@@ -384,6 +384,95 @@ boot.kernelPackages = lib.mkIf (lib.versionOlder pkgs.linux.version "7.0") (
 `lib.mkDefault` keeps this overridable — a user who already runs a ≥ 7.0 kernel (or wants to pin a
 different one) is unaffected.
 
+## Speakers — untuned by default, opt-in voicing (2026-08-28)
+
+The speakers work out of the box, but they sound flat: laptop speakers ship voiced by the
+vendor's Windows DSP layer, and Linux does not get that layer. The Cirrus smart-amplifier
+firmware *is* loaded by the stock Linux path — what is missing is the perceptual voicing on top
+of it (the Waves layer on Windows).
+
+`hardware.dell-xps-14-da14260.speakerTuning.enable = true;` restores it as a **PipeWire
+filter-chain** in front of the internal speaker sink: 13 biquads (2 high-pass, 10 peaking, 1
+high-shelf) into an LSP-Plugins lookahead limiter.
+
+The chain is ported from [basecamp/omarchy `aa9f0c54`][omarchy], where it was fitted to the
+measured response of the [xps-audio-linux][xps-audio] `xps-clone` EasyEffects profile (MIT) under
+a dense pink-weighted multitone of 104 bin-aligned tones. It measures **1.24 dB RMS** against
+that reference and matches its dynamic range within 0.1 LU. Nothing from upstream is
+redistributed — the reference's convolution impulse response is not carried, so this has **no
+binary blob** and is sample-rate agnostic. Bass Q is capped at 1.8 below 200 Hz on purpose: a
+closer magnitude fit swung group delay 31 ms across 63–80 Hz, which smears bass transients; the
+cap costs 0.33 dB and halves the swing.
+
+[omarchy]: https://github.com/basecamp/omarchy/commit/aa9f0c54c5c3bd8141f1d30ecf52e6b377a45fe5
+[xps-audio]: https://github.com/spencerbull/xps-audio-linux
+
+### How it is hosted
+
+Via pipewire's own **`filter-chain.service`** — a separate PipeWire *client*
+(`pipewire -c filter-chain.conf`), fed by a `services.pipewire.configPackages` entry that drops
+the graph into `share/pipewire/filter-chain.conf.d/`. Not a drop-in for the audio daemon's own
+config, for two reasons upstream hit: the daemon only reads its config at startup (so the graph
+could only be changed by restarting PipeWire, which drops every PulseAudio client's connection —
+Spotify and friends then need restarting by hand), and a malformed graph in the daemon's config
+stops PipeWire from starting at all, where here it breaks only this one unit.
+
+nixpkgs' pipewire module knows about that unit but only hands it `LV2_PATH`; it does not order or
+enable it. The profile adds `wantedBy = [ "default.target" ]` and orders it after
+`wireplumber.service` (WirePlumber does the linking).
+
+The limiter is an **LV2 plugin**, and without it the whole graph fails to instantiate and the
+tuning sink silently never appears. So `pkgs.lsp-plugins` is declared as
+`passthru.requiredLv2Packages` on the config package, which is the supported way to get it into
+the `LV2_PATH` that nixpkgs builds for `filter-chain.service` — no `extraLv2Packages` needed in
+user config.
+
+### What it looks like in the mixer
+
+A **second** output device appears, "Laptop Speakers" (`xps14_speaker_tuning`), in front of the
+raw `…HiFi__Speaker__sink`. Priorities on this board:
+
+| Sink | `priority.session` |
+|---|---|
+| Headphones | 1000 |
+| **Laptop Speakers (tuned)** | **800** (`sessionPriority`) |
+| Speaker (raw) | 712 |
+| HDMI1/2/3 | 664 / 648 / 632 |
+
+So the tuned sink outranks the untuned speakers it fronts and becomes the default output, while
+plugging headphones in still wins. The raw sink stays selectable — picking it just bypasses the
+tuning. (Upstream hides it, but only from its own shell scripts and QML panel; there is no
+PipeWire-level way to hide a sink that the filter-chain's own output still has to target.)
+
+**The two volumes compound.** Set the raw `Speaker` sink to 100% once, then drive volume from the
+tuned sink. The chain is linear and the limiter's level-dependent stages (`alr`, `boost`) are
+switched off, so lowering the volume does not change the voicing — it just stops the limiter
+engaging, which is the intended behaviour.
+
+Three properties on the output stream keep the graph honest, and each fixes a real failure:
+
+- `node.dont-move` — the filter's output is a movable sink input like any other, so anything that
+  reroutes "all streams" to a newly selected output drags the processing with it, onto headphones
+  or into the tuning's own sink (a cycle).
+- `node.dont-fallback` + `node.linger` — the host can start before the speaker device is
+  discovered. Without these WirePlumber links the output to whatever default exists (quietly
+  tuning the wrong device while the tuning sink still looks healthy) or destroys the node rather
+  than waiting. Both keys are needed; see WirePlumber's `scripts/linking/find-defined-target.lua`.
+
+### Why not a WirePlumber smart filter
+
+`node.software-dsp` / `create-filter` with `hide-parent` — what
+`framework/13-inch/common/classic-audio.nix` uses in this repo — is the better shape: it leaves
+the real device as the default output, so no second sink appears and no volumes compound.
+Upstream tried it and reports that on **PipeWire 1.6.8 / WirePlumber 0.5.15** (exactly the
+versions here) the graph loads and links correctly, controls are present, `mpv → filter → sink`
+links are made — and audio passes through **unprocessed**: the filter's input monitor and the
+speaker sink's monitor measure identically. Not reproduced independently here. Worth revisiting,
+since it would remove both caveats above.
+
+**Off by default**, per the repo's rule that profiles do not configure sound unless the hardware
+needs it to work at all. The speakers work untuned; this is a taste layer.
+
 ## Resolution/fps benchmark — 4K is free (2026-08-22)
 
 With the hardware ISP working, `icamerasrc ! caps ! fpsdisplaysink video-sink=fakesink` was
@@ -411,6 +500,18 @@ upright/mirrored, low-latency, properly colour-corrected (AIQ tuning), usable by
 blobs (see above).
 
 Microphone **working** on kernel ≥ 7.0 (enforced as a `mkDefault` in the profile — see above).
+
+Speakers **working untuned** out of the box; vendor-style voicing is **opt-in** via
+`hardware.dell-xps-14-da14260.speakerTuning.enable = true;` (a PipeWire filter-chain, no blob).
+Mechanically confirmed on a DA14260: the sink appears, wins the default-output election at
+`priority.session = 800`, and passes audio — which also confirms the LV2 limiter loaded, since a
+missing plugin fails the whole graph rather than degrading it. Measured level matches the
+predicted −9.3 dB (see below), so the graph is demonstrably in the path rather than bypassed.
+
+**Whether it sounds *better* is not established.** It has one listener's "works", not a
+preference. The magnitude fit is upstream's measurement against its own reference, not a
+judgement that the reference suits these drivers, and nothing here has been A/B'd blind. Treat
+the voicing as unvalidated taste and the plumbing as tested.
 
 IR camera **opt-in** on kernel < 7.2, via
 `hardware.dell-xps-14-da14260.irCamera.enable = true;` — that pulls in an
@@ -461,6 +562,9 @@ been re-confirmed since the recorder landed here.
    an in-tree driver source that way. Not taken here because `ipu-bridge` is shared with the
    working RGB path and a lost module priority would fail silently, where a patch that stops
    applying fails at build. Worth revisiting if a stable backport to 7.1.y does not happen.
-9. Ask for a stable backport of mainline `4fdb0342f05e` to 7.1.y — new device IDs are explicitly
+9. Re-test the WirePlumber smart-filter shape for the speaker tuning (`node.software-dsp` +
+   `hide-parent`, as `framework/13-inch/common/classic-audio.nix` uses). If it processes audio on
+   1.6.8/0.5.15 after all, the second sink and the compounding volumes both go away.
+10. Ask for a stable backport of mainline `4fdb0342f05e` to 7.1.y — new device IDs are explicitly
    in scope for stable. If it lands, this patch expires on its own; note that it will then start
    failing to apply, so the version gate needs updating at that point.
